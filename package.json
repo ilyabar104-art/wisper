@@ -1,0 +1,76 @@
+{
+  "name": "wisper",
+  "version": "0.1.0",
+  "description": "Local Whisper dictation for macOS",
+  "main": "dist-electron/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "setup:whisper": "bash scripts/setup-whisper.sh",
+    "setup:whisper:win": "powershell -ExecutionPolicy Bypass -File scripts/setup-whisper.ps1",
+    "setup:hotkey-tap": "clang -O2 -fobjc-arc -framework Cocoa -framework ApplicationServices native/hotkey-tap.m -o resources/bin/hotkey-tap",
+    "setup:win-hotkey": "cl /O2 /W3 native\\win-hotkey.c /Fe:resources\\bin\\win-hotkey.exe user32.lib",
+    "rebuild": "electron-rebuild",
+    "dist": "electron-vite build && electron-builder --mac",
+    "dist:win": "electron-vite build && electron-builder --win"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "uiohook-napi": "^1.5.4",
+    "wavefile": "^11.0.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.5",
+    "@types/react": "^19.0.7",
+    "@types/react-dom": "^19.0.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.3.1",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^5.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7"
+  },
+  "build": {
+    "appId": "com.wisper.app",
+    "productName": "Wisper",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist-electron/**/*",
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/bin",
+        "to": "bin"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": "dmg",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Wisper needs microphone access to transcribe your speech.",
+        "NSAppleEventsUsageDescription": "Wisper uses System Events to paste transcribed text into the active app."
+      }
+    },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64", "arm64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

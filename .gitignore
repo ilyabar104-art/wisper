@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-electron
+release
+*.log
+.DS_Store
+resources/bin/whisper-cli
+resources/bin/*.dylib
+resources/bin/*.metallib
+.env
+.cache/
