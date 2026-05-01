@@ -256,4 +256,4 @@ Hotkey — строка вида `Key1+Key2+...`, порядок не важен
    - `uiohook-napi` как hotkey-бэкенд (вместо CGEventTap);
    - автовставка через PowerShell SendKeys;
    - пути (`paths.ts`) и упаковка через electron-builder NSIS.
-   Если нет реального Windows-хоста — добавить хотя бы smoke-тест пути.
+   Если нет реального Windows-хоста — добавить хотя бы smoke-тест пути.# wisper
