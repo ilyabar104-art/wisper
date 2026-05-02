@@ -5,6 +5,7 @@ interface SettingsData {
   hotkey: string;
   pasteAfterTranscribe: boolean;
   language: string;
+  microphoneDeviceId: string;
 }
 
 const LANGUAGES = [
@@ -53,20 +54,105 @@ function resolveKey(e: KeyboardEvent): string | null {
   return null;
 }
 
+interface AudioDevice {
+  deviceId: string;
+  label: string;
+}
+
 export default function Settings({
   onHotkeyChange,
+  onMicChange,
 }: {
   onHotkeyChange: (key: string) => void;
+  onMicChange: (deviceId: string) => void;
 }) {
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [captureKeys, setCaptureKeys] = useState<string[]>([]);
   const [saved, setSaved] = useState(false);
+  const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const captureRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     window.wisper.getSettings().then((s) => setSettings(s as SettingsData));
+    loadAudioDevices();
   }, []);
+
+  async function runAudioDiagnostics() {
+    const log = (level: string, msg: string) => window.wisper.logRenderer(level, `[diag] ${msg}`);
+    log('info', '=== Audio diagnostics start ===');
+
+    let devices: MediaDeviceInfo[] = [];
+    try {
+      devices = await navigator.mediaDevices.enumerateDevices();
+      log('info', `enumerateDevices: ${devices.length} total, ${devices.filter((d) => d.kind === 'audioinput').length} audio inputs`);
+    } catch (e) {
+      log('error', `enumerateDevices failed: ${e}`);
+    }
+    const inputs = devices.filter((d) => d.kind === 'audioinput');
+
+    const tries: Array<[string, MediaStreamConstraints]> = [
+      ['audio:true', { audio: true }],
+      ['sampleRate:16000', { audio: { sampleRate: 16000 } }],
+      ['sampleRate:48000', { audio: { sampleRate: 48000 } }],
+      ['sampleRate:44100', { audio: { sampleRate: 44100 } }],
+      ['channelCount:1', { audio: { channelCount: 1 } }],
+      ['channelCount:2', { audio: { channelCount: 2 } }],
+      ['ec:true,ns:true,agc:true', { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }],
+      ['ec:false,ns:false,agc:false', { audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }],
+    ];
+    for (const [name, c] of tries) {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia(c);
+        const t = s.getAudioTracks()[0];
+        log('info', `OK ${name} → settings=${JSON.stringify(t.getSettings())}`);
+        s.getTracks().forEach((tr) => tr.stop());
+      } catch (e) {
+        const err = e as DOMException;
+        log('error', `FAIL ${name} → ${err.name}: ${err.message} constraint=${(err as any).constraint ?? 'n/a'}`);
+      }
+    }
+
+    for (const dev of inputs) {
+      const label = dev.label || dev.deviceId;
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: dev.deviceId } } });
+        const t = s.getAudioTracks()[0];
+        log('info', `OK device "${label}" → settings=${JSON.stringify(t.getSettings())}`);
+        s.getTracks().forEach((tr) => tr.stop());
+      } catch (e) {
+        const err = e as DOMException;
+        log('error', `FAIL device "${label}" → ${err.name}: ${err.message}`);
+      }
+    }
+
+    // Try AudioContext alone
+    try {
+      const ctx = new AudioContext();
+      log('info', `AudioContext OK sampleRate=${ctx.sampleRate} state=${ctx.state}`);
+      ctx.close();
+    } catch (e) {
+      log('error', `AudioContext failed: ${e}`);
+    }
+
+    log('info', '=== Audio diagnostics done ===');
+    alert('Diagnostics complete. Open log file to see results.');
+  }
+
+  async function loadAudioDevices() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devices
+        .filter((d) => d.kind === 'audioinput')
+        .map((d, i) => ({
+          deviceId: d.deviceId,
+          label: d.label || `Microphone ${i + 1}`,
+        }));
+      setAudioDevices(inputs);
+    } catch (e) {
+      window.wisper.logRenderer('error', `enumerateDevices failed: ${e}`);
+    }
+  }
 
   async function apply(patch: Partial<SettingsData>) {
     if (!settings) return;
@@ -74,6 +160,7 @@ export default function Settings({
     setSettings(next);
     await window.wisper.setSettings(patch as Record<string, unknown>);
     if (patch.hotkey) onHotkeyChange(patch.hotkey);
+    if (typeof patch.microphoneDeviceId === 'string') onMicChange(patch.microphoneDeviceId);
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   }
@@ -212,6 +299,21 @@ export default function Settings({
         </select>
       </section>
 
+      {audioDevices.length > 0 && (
+        <section>
+          <h4>Microphone</h4>
+          <select
+            value={settings.microphoneDeviceId}
+            onChange={(e) => apply({ microphoneDeviceId: e.target.value })}
+          >
+            <option value="">System default</option>
+            {audioDevices.map((d) => (
+              <option key={d.deviceId} value={d.deviceId}>{d.label}</option>
+            ))}
+          </select>
+        </section>
+      )}
+
       <section>
         <h4>Behavior</h4>
         <label className="toggle-row">
@@ -222,6 +324,16 @@ export default function Settings({
           />
           <span>Auto-paste transcription into active app</span>
         </label>
+      </section>
+
+      <section>
+        <h4>Diagnostics</h4>
+        <button className="capture-btn" onClick={() => window.wisper.logOpen()}>
+          Open log file
+        </button>
+        <button className="capture-btn" style={{ marginLeft: 8 }} onClick={runAudioDiagnostics}>
+          Run audio diagnostics
+        </button>
       </section>
 
       {saved && <div className="saved-badge">Saved</div>}

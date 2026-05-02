@@ -8,12 +8,16 @@
  *   stdout — READY | DOWN | UP | KEY <vk> D|U | CAPREADY | CAPEND | ERROR <msg>
  *
  * Key consumption strategy:
- *   - All keys pass through until the full combo fires.
- *   - When combo fires: inject F24+up (breaks pending Alt/Win menu) then
- *     synthetic ups for any modifiers that were let through, so the OS
- *     clears its modifier state cleanly.
- *   - After that, consume all target-key up events (both the injected-up
- *     modifiers and the directly consumed non-modifiers).
+ *   - Modifier keys that are part of the combo are PRE-CONSUMED on their
+ *     DOWN event. This prevents Win+Space from triggering the Windows input
+ *     language switcher (and similar OS shortcuts) before our combo fires.
+ *   - If a non-combo key arrives while modifiers are pre-consumed, we replay
+ *     the consumed modifier downs synthetically so the OS sees them.
+ *   - If a pre-consumed modifier is released without the combo ever completing,
+ *     we replay its down+up so the OS sees a normal tap (e.g., Start menu).
+ *   - Non-modifier combo keys are consumed when the combo fires.
+ *   - Any modifier that was NOT pre-consumed (leaked) is cleaned up by
+ *     fix_leaked_modifiers as before.
  *
  * Build (from VS Developer Command Prompt):
  *   cl /O2 /W3 native\win-hotkey.c /Fe:resources\bin\win-hotkey.exe user32.lib
@@ -27,8 +31,9 @@
 static DWORD g_target[32];
 static int   g_target_n  = 0;
 static BOOL  g_pressed[256];
-static BOOL  g_consumed[256]; /* we ate the down for this vk */
-static BOOL  g_eat_up[256];   /* eat next up (synthetic up already sent) */
+static BOOL  g_consumed[256];    /* we ate the down for this vk */
+static BOOL  g_eat_up[256];      /* eat next up (synthetic up already sent) */
+static BOOL  g_preconsumed[256]; /* modifier down pre-consumed before combo fired */
 static BOOL  g_active    = FALSE;
 static BOOL  g_capturing = FALSE;
 static HHOOK g_hook      = NULL;
@@ -67,25 +72,44 @@ static BOOL is_modifier(DWORD vk) {
            vk == VK_CAPITAL;
 }
 
+static BOOL needs_extended(DWORD vk) {
+    return vk == VK_RMENU || vk == VK_RCONTROL || vk == VK_RSHIFT || vk == VK_RWIN;
+}
+
 /*
- * When the combo fires, fix up any modifier keys that were let through
- * (their down event reached the OS) so that:
- *  1. Alt/Win pending-menu state is cancelled (via injected F24 key).
- *  2. The OS modifier state is cleared (via synthetic key-ups).
- * We then mark those modifiers' real up events to be consumed so the OS
- * doesn't see a double up.
+ * Replay synthetic down events for any pre-consumed modifiers, then clear
+ * g_preconsumed. Called when a non-combo key arrives while modifiers are
+ * being held (combo was abandoned mid-way).
+ */
+static void replay_preconsumed(void) {
+    INPUT buf[10]; int n = 0;
+    ZeroMemory(buf, sizeof(buf));
+    for (int i = 0; i < 256 && n < 10; i++) {
+        if (!g_preconsumed[i]) continue;
+        buf[n].type = INPUT_KEYBOARD;
+        buf[n].ki.wVk = (WORD)i;
+        if (needs_extended((DWORD)i)) buf[n].ki.dwFlags = KEYEVENTF_EXTENDEDKEY;
+        n++;
+        g_preconsumed[i] = FALSE;
+    }
+    if (n > 0) SendInput(n, buf, sizeof(INPUT));
+}
+
+/*
+ * Fix up any modifier keys that were NOT pre-consumed (i.e., they leaked to
+ * the OS). Injects F24 to break pending Alt/Win menus, then synthetic ups to
+ * clear OS modifier state.
  *
- * Injected events re-enter the hook with LLKHF_INJECTED set and are
- * skipped immediately, so there is no recursion.
+ * Injected events re-enter the hook with LLKHF_INJECTED set and are skipped.
  */
 static void fix_leaked_modifiers(void) {
-    BOOL has_leaked_mod = FALSE;
+    BOOL has_leaked = FALSE;
     for (int i = 0; i < g_target_n; i++) {
         DWORD vk = g_target[i] & 0xFF;
-        if (!g_consumed[vk] && is_modifier(vk) && g_pressed[vk])
-            has_leaked_mod = TRUE;
+        if (!g_consumed[vk] && !g_preconsumed[vk] && is_modifier(vk) && g_pressed[vk])
+            has_leaked = TRUE;
     }
-    if (!has_leaked_mod) return;
+    if (!has_leaked) return;
 
     /* F24 down+up: interrupts any pending Alt/Win menu activation. */
     INPUT f24[2];
@@ -94,19 +118,17 @@ static void fix_leaked_modifiers(void) {
     f24[1].type = INPUT_KEYBOARD; f24[1].ki.wVk = VK_F24; f24[1].ki.dwFlags = KEYEVENTF_KEYUP;
     SendInput(2, f24, sizeof(INPUT));
 
-    /* Synthetic up for each leaked modifier to clear OS state. */
+    /* Synthetic up for each leaked modifier. */
     INPUT buf[10]; int n = 0;
     ZeroMemory(buf, sizeof(buf));
     for (int i = 0; i < g_target_n && n < 10; i++) {
         DWORD vk = g_target[i] & 0xFF;
-        if (g_consumed[vk] || !is_modifier(vk) || !g_pressed[vk]) continue;
+        if (g_consumed[vk] || g_preconsumed[vk] || !is_modifier(vk) || !g_pressed[vk]) continue;
         buf[n].type = INPUT_KEYBOARD;
         buf[n].ki.wVk = (WORD)vk;
         buf[n].ki.dwFlags = KEYEVENTF_KEYUP;
-        /* Right-side extended keys need the extended flag. */
-        if (vk == VK_RMENU || vk == VK_RCONTROL || vk == VK_RSHIFT || vk == VK_RWIN)
-            buf[n].ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
-        g_eat_up[vk] = TRUE; /* consume the real up when it arrives */
+        if (needs_extended(vk)) buf[n].ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+        g_eat_up[vk] = TRUE;
         n++;
     }
     if (n > 0) SendInput(n, buf, sizeof(INPUT));
@@ -132,35 +154,79 @@ static LRESULT CALLBACK hook_proc(int code, WPARAM wp, LPARAM lp) {
         return 1;
     }
 
-    if (!is_target(vk)) return CallNextHookEx(g_hook, code, wp, lp);
-
     if (down) {
         g_pressed[vk] = TRUE;
+
+        if (!g_active && is_target(vk) && is_modifier(vk)) {
+            /*
+             * Pre-consume modifier keys that are part of the combo so the OS
+             * never sees Win+Space (language switcher), Win (start menu), etc.
+             * until we know whether the full combo will complete.
+             */
+            g_preconsumed[vk] = TRUE;
+            if (combo_down()) {
+                g_active = TRUE;
+                emit("DOWN");
+                /* All combo keys were modifiers — no leaked keys to fix. */
+                memset(g_preconsumed, 0, sizeof(g_preconsumed));
+                g_consumed[vk] = TRUE;
+            }
+            return 1;
+        }
+
+        if (!is_target(vk)) {
+            /*
+             * Non-combo key arrived while we have pre-consumed modifiers.
+             * Replay them so the OS sees the correct modifier+key sequence.
+             */
+            replay_preconsumed();
+            return CallNextHookEx(g_hook, code, wp, lp);
+        }
+
+        /* Target non-modifier key. */
         BOOL all_held = combo_down();
 
         if (!g_active && all_held) {
             g_active = TRUE;
             emit("DOWN");
-            /* Fix any modifiers that were let through. */
             fix_leaked_modifiers();
-            /* Consume the key that just completed the combo. */
+            memset(g_preconsumed, 0, sizeof(g_preconsumed));
             g_consumed[vk] = TRUE;
             return 1;
         }
 
         if (g_active) {
-            /* Combo already active — consume. */
             g_consumed[vk] = TRUE;
             return 1;
         }
 
-        /* Combo not yet active — let this key through normally. */
         g_consumed[vk] = FALSE;
         return CallNextHookEx(g_hook, code, wp, lp);
     }
 
     if (up) {
         g_pressed[vk] = FALSE;
+
+        if (g_preconsumed[vk]) {
+            /*
+             * This modifier was pre-consumed and the combo never fired.
+             * Replay down+up so the OS sees a normal tap (e.g., Start menu
+             * on lone Win key release).
+             */
+            g_preconsumed[vk] = FALSE;
+            INPUT replay[2];
+            ZeroMemory(replay, sizeof(replay));
+            replay[0].type = INPUT_KEYBOARD; replay[0].ki.wVk = (WORD)vk;
+            replay[1].type = INPUT_KEYBOARD; replay[1].ki.wVk = (WORD)vk;
+            replay[1].ki.dwFlags = KEYEVENTF_KEYUP;
+            if (needs_extended(vk)) {
+                replay[0].ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+                replay[1].ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+            }
+            SendInput(2, replay, sizeof(INPUT));
+            return 1; /* consume real up; injected pair takes its place */
+        }
+
         if (g_active && !combo_down()) { g_active = FALSE; emit("UP"); }
         BOOL eat = g_consumed[vk] || g_eat_up[vk];
         g_consumed[vk] = FALSE;
@@ -182,9 +248,10 @@ static void apply_set(const char *line) {
         if (end > p && v > 0 && v < 256) vks[n++] = (DWORD)v;
         p = end;
     }
-    memset(g_pressed,  0, sizeof(g_pressed));
-    memset(g_consumed, 0, sizeof(g_consumed));
-    memset(g_eat_up,   0, sizeof(g_eat_up));
+    memset(g_pressed,     0, sizeof(g_pressed));
+    memset(g_consumed,    0, sizeof(g_consumed));
+    memset(g_eat_up,      0, sizeof(g_eat_up));
+    memset(g_preconsumed, 0, sizeof(g_preconsumed));
     if (g_active) { g_active = FALSE; emit("UP"); }
     memcpy(g_target, vks, n * sizeof(DWORD));
     g_target_n = n;
@@ -197,9 +264,10 @@ static DWORD WINAPI stdin_thread(LPVOID _) {
         while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r')) buf[--n] = '\0';
         if      (strncmp(buf, "SET", 3) == 0)   apply_set(buf);
         else if (strcmp(buf, "CAPBEGIN") == 0) {
-            memset(g_pressed, 0, sizeof(g_pressed));
-            memset(g_consumed, 0, sizeof(g_consumed));
-            memset(g_eat_up,   0, sizeof(g_eat_up));
+            memset(g_pressed,     0, sizeof(g_pressed));
+            memset(g_consumed,    0, sizeof(g_consumed));
+            memset(g_eat_up,      0, sizeof(g_eat_up));
+            memset(g_preconsumed, 0, sizeof(g_preconsumed));
             if (g_active) { g_active = FALSE; emit("UP"); }
             g_capturing = TRUE;
             emit("CAPREADY");
@@ -214,9 +282,10 @@ static DWORD WINAPI stdin_thread(LPVOID _) {
 
 int main(void) {
     g_main_tid = GetCurrentThreadId();
-    memset(g_pressed,  0, sizeof(g_pressed));
-    memset(g_consumed, 0, sizeof(g_consumed));
-    memset(g_eat_up,   0, sizeof(g_eat_up));
+    memset(g_pressed,     0, sizeof(g_pressed));
+    memset(g_consumed,    0, sizeof(g_consumed));
+    memset(g_eat_up,      0, sizeof(g_eat_up));
+    memset(g_preconsumed, 0, sizeof(g_preconsumed));
 
     g_hook = SetWindowsHookEx(WH_KEYBOARD_LL, hook_proc, NULL, 0);
     if (!g_hook) {

@@ -22,6 +22,27 @@ import {
 } from './models.js';
 import { getSettings, updateSettings } from './settings.js';
 import { addEntry, listEntries, deleteEntry } from './history.js';
+import { initLogger, getLogPath, log } from './logger.js';
+import { clipboard, shell } from 'electron';
+
+if (process.platform === 'win32') {
+  const { default: winca } = await import('win-ca');
+  winca({ fallback: true, inject: '+' });
+  // Audio capture compatibility on Windows:
+  //  - WasapiRawAudioCapture: Chrome's exclusive-mode WASAPI capture (Intel SST etc. don't support)
+  //  - AudioServiceSandbox: extra sandbox around audio service — can block some drivers
+  //  - HardwareMediaKeyHandling: irrelevant, just noisy
+  app.commandLine.appendSwitch(
+    'disable-features',
+    'WasapiRawAudioCapture,AudioServiceSandbox,HardwareMediaKeyHandling'
+  );
+}
+
+initLogger();
+const os = await import('os');
+log('info', `=== Wisper starting ===`);
+log('info', `Electron=${process.versions.electron} Chrome=${process.versions.chrome} Node=${process.versions.node}`);
+log('info', `Platform=${process.platform} Arch=${process.arch} OS=${os.release()}`);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -53,14 +74,12 @@ function createWindow() {
   }
 
   win.webContents.on('did-fail-load', (_e, code, desc, url) => {
-    console.error('did-fail-load', code, desc, url);
+    log('error', 'did-fail-load', code, desc, url);
   });
-  win.webContents.on(
-    'console-message',
-    (_e, _level, message, _line, sourceId) => {
-      console.log('[renderer]', sourceId, message);
-    }
-  );
+  win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    const lvl = level >= 3 ? 'error' : level === 2 ? 'warn' : 'info';
+    log(lvl, `[renderer] ${sourceId}:${line} ${message}`);
+  });
 }
 
 function createTray() {
@@ -203,6 +222,13 @@ function registerIpc() {
       : true
   );
   ipcMain.handle('accessibility:open-settings', () => openAccessibilitySettings());
+
+  ipcMain.handle('clipboard:write', (_evt, text: string) => { clipboard.writeText(text); });
+  ipcMain.handle('log:path', () => getLogPath());
+  ipcMain.handle('log:open', () => shell.showItemInFolder(getLogPath()));
+  ipcMain.on('log:renderer', (_evt, level: string, message: string) => {
+    log(level as 'info' | 'warn' | 'error', '[renderer-explicit]', message);
+  });
 }
 
 app.whenReady().then(async () => {

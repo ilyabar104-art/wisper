@@ -20,7 +20,7 @@ let workletReady = false;
 
 async function getCtx(): Promise<AudioContext> {
   if (sharedCtx && sharedCtx.state !== 'closed') return sharedCtx;
-  sharedCtx = new AudioContext({ sampleRate: 16000 });
+  sharedCtx = new AudioContext();
   workletReady = false;
   return sharedCtx;
 }
@@ -34,29 +34,87 @@ async function ensureWorklet(ctx: AudioContext): Promise<void> {
   workletReady = true;
 }
 
+function rlog(level: 'info' | 'warn' | 'error', msg: string) {
+  window.wisper.logRenderer(level, msg);
+}
+
+async function tryGetUserMedia(
+  deviceId: string | undefined,
+  knownInputs: MediaDeviceInfo[]
+): Promise<MediaStream> {
+  // Try the requested device (or default) first.
+  const firstAudio: MediaStreamConstraints['audio'] = deviceId
+    ? { deviceId: { exact: deviceId } }
+    : true;
+  rlog('info', `Calling getUserMedia audio=${JSON.stringify(firstAudio)}`);
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: firstAudio });
+    return stream;
+  } catch (e) {
+    const err = e as DOMException;
+    rlog('error', `getUserMedia failed: name=${err.name} message=${err.message} constraint=${(err as any).constraint ?? 'n/a'}`);
+    if (err.name !== 'NotReadableError' || deviceId) throw e;
+  }
+
+  // Default failed — try each specific device ID in turn (skips alias IDs).
+  const specific = knownInputs.filter(
+    (d) => d.deviceId !== 'default' && d.deviceId !== 'communications'
+  );
+  rlog('info', `Falling back to ${specific.length} specific device(s)`);
+  for (const dev of specific) {
+    rlog('info', `Trying deviceId=${dev.deviceId} label=${dev.label}`);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { deviceId: { exact: dev.deviceId } },
+      });
+      rlog('info', `Success with deviceId=${dev.deviceId}`);
+      return stream;
+    } catch (e2) {
+      const err2 = e2 as DOMException;
+      rlog('warn', `  failed: ${err2.name}: ${err2.message}`);
+    }
+  }
+  throw new DOMException('Could not start audio source on any device', 'NotReadableError');
+}
+
 export class MicRecorder {
   private stream: MediaStream | null = null;
   private workletNode: AudioWorkletNode | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
   private chunks: Float32Array[] = [];
 
-  async start(onLevel?: (rms: number) => void): Promise<void> {
-    // No hardware sample-rate or channel constraints — let the driver open at
-    // its native format (e.g. 48 kHz for Intel SST array mics). The AudioContext
-    // at 16 kHz resamples the stream internally via Chromium's high-quality
-    // resampler, so Whisper always receives 16 kHz mono PCM regardless of the
-    // device's native capabilities.
-    this.stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-      },
-    });
+  async start(onLevel?: (rms: number) => void, deviceId?: string): Promise<void> {
+    rlog('info', `MicRecorder.start deviceId=${deviceId ?? 'default'}`);
 
+    // Log all available audio input devices
+    let inputs: MediaDeviceInfo[] = [];
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      inputs = devices.filter((d) => d.kind === 'audioinput');
+      rlog('info', `Audio inputs (${inputs.length}): ${inputs.map((d) => `[${d.deviceId.slice(0, 8)}] ${d.label || '(no label)'}`).join(' | ')}`);
+    } catch (e) {
+      rlog('warn', `enumerateDevices failed: ${e}`);
+    }
+
+    this.stream = await tryGetUserMedia(deviceId, inputs);
+    const track = this.stream.getAudioTracks()[0];
+    rlog('info', `Stream ok — track="${track?.label}" settings=${JSON.stringify(track?.getSettings())}`);
+
+    rlog('info', `Creating AudioContext (sharedCtx state=${sharedCtx?.state ?? 'none'})`);
     const ctx = await getCtx();
-    if (ctx.state === 'suspended') await ctx.resume();
-    await ensureWorklet(ctx);
+    rlog('info', `AudioContext ready sampleRate=${ctx.sampleRate} state=${ctx.state}`);
+    if (ctx.state === 'suspended') {
+      rlog('info', 'Resuming suspended AudioContext');
+      await ctx.resume();
+    }
+    rlog('info', 'Loading AudioWorklet');
+    try {
+      await ensureWorklet(ctx);
+    } catch (e) {
+      rlog('error', `AudioWorklet load failed: ${e}`);
+      throw e;
+    }
+    rlog('info', 'AudioWorklet ready');
 
     this.chunks = [];
     this.source = ctx.createMediaStreamSource(this.stream);
