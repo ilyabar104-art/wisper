@@ -6,6 +6,7 @@ import {
   Menu,
   nativeImage,
   systemPreferences,
+  session,
 } from 'electron';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
@@ -205,6 +206,17 @@ function registerIpc() {
 }
 
 app.whenReady().then(async () => {
+  // On Windows, Electron's session must explicitly grant media permissions —
+  // getUserMedia in the renderer is silently denied otherwise.
+  if (process.platform === 'win32') {
+    session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+      callback(permission === 'media' || permission === 'mediaKeySystem');
+    });
+    session.defaultSession.setPermissionCheckHandler((_wc, permission) => {
+      return permission === 'media' || permission === 'mediaKeySystem';
+    });
+  }
+
   // Ensure microphone permission is requested up front (macOS-only API;
   // on Windows the OS handles it via renderer's getUserMedia).
   if (process.platform === 'darwin') {
