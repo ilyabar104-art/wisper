@@ -6,6 +6,7 @@ export interface Settings {
   hotkey: string; // e.g. "RightAlt"
   pasteAfterTranscribe: boolean;
   language: string; // "auto" or ISO code
+  microphoneDeviceId: string; // "" = system default
 }
 
 const DEFAULTS: Settings = {
@@ -13,6 +14,7 @@ const DEFAULTS: Settings = {
   hotkey: 'RightAlt',
   pasteAfterTranscribe: true,
   language: 'auto',
+  microphoneDeviceId: '',
 };
 
 let cache: Settings | null = null;

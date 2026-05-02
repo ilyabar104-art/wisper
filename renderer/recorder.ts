@@ -20,7 +20,7 @@ let workletReady = false;
 
 async function getCtx(): Promise<AudioContext> {
   if (sharedCtx && sharedCtx.state !== 'closed') return sharedCtx;
-  sharedCtx = new AudioContext({ sampleRate: 16000 });
+  sharedCtx = new AudioContext();
   workletReady = false;
   return sharedCtx;
 }
@@ -40,14 +40,14 @@ export class MicRecorder {
   private source: MediaStreamAudioSourceNode | null = null;
   private chunks: Float32Array[] = [];
 
-  async start(onLevel?: (rms: number) => void): Promise<void> {
+  async start(onLevel?: (rms: number) => void, deviceId?: string): Promise<void> {
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
-        sampleRate: 16000,
         echoCancellation: false,
         noiseSuppression: false,
         autoGainControl: false,
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
       },
     });
 

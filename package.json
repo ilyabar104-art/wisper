@@ -19,7 +19,8 @@
   "dependencies": {
     "better-sqlite3": "^11.7.0",
     "uiohook-napi": "^1.5.4",
-    "wavefile": "^11.0.0"
+    "wavefile": "^11.0.0",
+    "win-ca": "^3.5.1"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.1",
@@ -51,7 +52,10 @@
       {
         "from": "resources/bin",
         "to": "bin",
-        "filter": ["**/*.exe", "**/*.dll"]
+        "filter": [
+          "**/*.exe",
+          "**/*.dll"
+        ]
       }
     ],
     "mac": {
@@ -66,12 +70,18 @@
     },
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh"
     }
   }
 }

@@ -5,6 +5,7 @@ interface SettingsData {
   hotkey: string;
   pasteAfterTranscribe: boolean;
   language: string;
+  microphoneDeviceId: string;
 }
 
 const LANGUAGES = [
@@ -53,20 +54,44 @@ function resolveKey(e: KeyboardEvent): string | null {
   return null;
 }
 
+interface AudioDevice {
+  deviceId: string;
+  label: string;
+}
+
 export default function Settings({
   onHotkeyChange,
+  onMicChange,
 }: {
   onHotkeyChange: (key: string) => void;
+  onMicChange: (deviceId: string) => void;
 }) {
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [captureKeys, setCaptureKeys] = useState<string[]>([]);
   const [saved, setSaved] = useState(false);
+  const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const captureRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     window.wisper.getSettings().then((s) => setSettings(s as SettingsData));
+    loadAudioDevices();
   }, []);
+
+  async function loadAudioDevices() {
+    try {
+      // Need a temporary stream to get device labels (browser requires permission first)
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devices
+        .filter((d) => d.kind === 'audioinput')
+        .map((d) => ({ deviceId: d.deviceId, label: d.label || d.deviceId }));
+      setAudioDevices(inputs);
+    } catch {
+      // Permission denied or no devices — leave list empty
+    }
+  }
 
   async function apply(patch: Partial<SettingsData>) {
     if (!settings) return;
@@ -74,6 +99,7 @@ export default function Settings({
     setSettings(next);
     await window.wisper.setSettings(patch as Record<string, unknown>);
     if (patch.hotkey) onHotkeyChange(patch.hotkey);
+    if (typeof patch.microphoneDeviceId === 'string') onMicChange(patch.microphoneDeviceId);
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   }
@@ -211,6 +237,21 @@ export default function Settings({
           ))}
         </select>
       </section>
+
+      {audioDevices.length > 0 && (
+        <section>
+          <h4>Microphone</h4>
+          <select
+            value={settings.microphoneDeviceId}
+            onChange={(e) => apply({ microphoneDeviceId: e.target.value })}
+          >
+            <option value="">System default</option>
+            {audioDevices.map((d) => (
+              <option key={d.deviceId} value={d.deviceId}>{d.label}</option>
+            ))}
+          </select>
+        </section>
+      )}
 
       <section>
         <h4>Behavior</h4>

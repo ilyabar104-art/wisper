@@ -22,6 +22,11 @@ import {
 import { getSettings, updateSettings } from './settings.js';
 import { addEntry, listEntries, deleteEntry } from './history.js';
 
+if (process.platform === 'win32') {
+  const { default: winca } = await import('win-ca');
+  winca({ fallback: true, inject: '+' });
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let win: BrowserWindow | null = null;

@@ -15,6 +15,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [activeModel, setActiveModel] = useState<string>('');
   const [hotkey, setHotkey] = useState<string>('RightAlt');
+  const [micDeviceId, setMicDeviceId] = useState<string>('');
   const [hasAccessibility, setHasAccessibility] = useState<boolean>(true);
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
   const [transcribeMs, setTranscribeMs] = useState(0);
@@ -27,7 +28,10 @@ export default function App() {
 
   useEffect(() => {
     window.wisper.getActiveModel().then(setActiveModel);
-    window.wisper.getSettings().then((s: any) => setHotkey(s.hotkey ?? 'RightAlt'));
+    window.wisper.getSettings().then((s: any) => {
+      setHotkey(s.hotkey ?? 'RightAlt');
+      setMicDeviceId(s.microphoneDeviceId ?? '');
+    });
     window.wisper.checkAccessibility().then(setHasAccessibility);
     const offDown = window.wisper.onHotkeyDown(() => startRecording());
     const offUp = window.wisper.onHotkeyUp(() => stopAndTranscribe());
@@ -49,7 +53,7 @@ export default function App() {
     setError(null);
     try {
       const rec = new MicRecorder();
-      await rec.start((rms) => setLevel(rms));
+      await rec.start((rms) => setLevel(rms), micDeviceId || undefined);
       recorderRef.current = rec;
       setStatus('recording');
       window.wisper.notifyRecordingState(true);
@@ -197,7 +201,7 @@ export default function App() {
         {tab === 'history' && <History />}
 
         {tab === 'settings' && (
-          <Settings onHotkeyChange={(k) => setHotkey(k)} />
+          <Settings onHotkeyChange={(k) => setHotkey(k)} onMicChange={(id) => setMicDeviceId(id)} />
         )}
       </main>
     </div>
