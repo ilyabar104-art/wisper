@@ -61,6 +61,14 @@ const api = {
   // Accessibility
   checkAccessibility: (): Promise<boolean> => ipcRenderer.invoke('accessibility:check'),
   openAccessibilitySettings: () => ipcRenderer.invoke('accessibility:open-settings'),
+
+  // Clipboard (via main process — bypasses renderer permission restrictions)
+  clipboardWrite: (text: string): Promise<void> => ipcRenderer.invoke('clipboard:write', text),
+
+  // Log
+  logPath: (): Promise<string> => ipcRenderer.invoke('log:path'),
+  logOpen: (): Promise<void> => ipcRenderer.invoke('log:open'),
+  logRenderer: (level: string, message: string) => ipcRenderer.send('log:renderer', level, message),
 };
 
 contextBridge.exposeInMainWorld('wisper', api);

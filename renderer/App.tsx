@@ -58,8 +58,10 @@ export default function App() {
       setStatus('recording');
       window.wisper.notifyRecordingState(true);
     } catch (e) {
-      setError((e as Error).message);
+      const err = e as Error;
+      setError(err.message);
       setStatus('error');
+      window.wisper.logRenderer('error', `startRecording failed: ${err.name}: ${err.message}`);
     } finally {
       startingRef.current = false;
     }

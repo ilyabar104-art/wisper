@@ -27,7 +27,7 @@ export default function History() {
   }
 
   function copy(text: string) {
-    navigator.clipboard.writeText(text);
+    window.wisper.clipboardWrite(text);
   }
 
   return (
