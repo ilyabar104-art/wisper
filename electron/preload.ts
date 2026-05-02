@@ -49,6 +49,14 @@ const api = {
   listHotkeys: (): Promise<string[]> => ipcRenderer.invoke('hotkey:list'),
   pauseHotkey: () => ipcRenderer.send('hotkey:pause'),
   resumeHotkey: () => ipcRenderer.send('hotkey:resume'),
+  platform: process.platform as string,
+  startHotkeyCapture: () => ipcRenderer.send('hotkey:capture-start'),
+  stopHotkeyCapture: () => ipcRenderer.send('hotkey:capture-stop'),
+  onHotkeyCaptureKey: (cb: (keyName: string, isDown: boolean) => void) => {
+    const listener = (_: unknown, keyName: string, isDown: boolean) => cb(keyName, isDown);
+    ipcRenderer.on('hotkey-capture-key', listener);
+    return () => ipcRenderer.removeListener('hotkey-capture-key', listener);
+  },
 
   // Accessibility
   checkAccessibility: (): Promise<boolean> => ipcRenderer.invoke('accessibility:check'),

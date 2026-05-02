@@ -12,7 +12,7 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { transcribeWav, warmupWhisper, shutdownWhisper } from './whisper.js';
 import { pasteText, openAccessibilitySettings } from './paste.js';
-import { startHotkey, stopHotkey, setHotkey, pauseHotkey, resumeHotkey, SUPPORTED_KEYS } from './hotkey.js';
+import { startHotkey, stopHotkey, setHotkey, pauseHotkey, resumeHotkey, SUPPORTED_KEYS, startHotkeyCapture, stopHotkeyCapture } from './hotkey.js';
 import {
   listModelsWithStatus,
   downloadModel,
@@ -39,8 +39,11 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      backgroundThrottling: false,
     },
   });
+
+  win.setMenu(null);
 
   if (process.env.ELECTRON_RENDERER_URL) {
     win.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -187,6 +190,12 @@ function registerIpc() {
   ipcMain.handle('hotkey:list', () => SUPPORTED_KEYS);
   ipcMain.on('hotkey:pause', () => pauseHotkey());
   ipcMain.on('hotkey:resume', () => resumeHotkey());
+  ipcMain.on('hotkey:capture-start', () => {
+    startHotkeyCapture((keyName, isDown) => {
+      if (win && !win.isDestroyed()) win.webContents.send('hotkey-capture-key', keyName, isDown);
+    });
+  });
+  ipcMain.on('hotkey:capture-stop', () => stopHotkeyCapture());
   ipcMain.handle('accessibility:check', () =>
     process.platform === 'darwin'
       ? systemPreferences.isTrustedAccessibilityClient(false)

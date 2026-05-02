@@ -81,45 +81,80 @@ export default function Settings({
   function startCapture() {
     setCapturing(true);
     setCaptureKeys([]);
-    window.wisper.pauseHotkey();
 
-    const held = new Set<string>();
+    if (window.wisper.platform === 'win32') {
+      // Windows: route through win-hotkey.exe so Win key and all keys are captured
+      // globally without losing window focus.
+      const held = new Set<string>();
 
-    function onDown(e: KeyboardEvent) {
-      e.preventDefault();
-      const k = resolveKey(e);
-      if (!k) return;
-      held.add(k);
-      setCaptureKeys([...held]);
-    }
+      window.wisper.startHotkeyCapture();
+      const unlisten = window.wisper.onHotkeyCaptureKey((keyName, isDown) => {
+        if (isDown) {
+          held.add(keyName);
+          setCaptureKeys([...held]);
+        } else {
+          // Escape alone → cancel; anything else → commit.
+          if (held.size === 1 && held.has('Escape')) {
+            cleanup();
+          } else if (held.size > 0) {
+            const combo = [...held].join('+');
+            cleanup();
+            apply({ hotkey: combo });
+          }
+        }
+      });
 
-    function onUp(e: KeyboardEvent) {
-      e.preventDefault();
-      // On any key-up: commit whatever is held right now as the combo.
-      if (held.size > 0) {
-        const combo = [...held].join('+');
-        cleanup();
-        apply({ hotkey: combo });
+      function cleanup() {
+        setCapturing(false);
+        setCaptureKeys([]);
+        unlisten();
+        window.wisper.stopHotkeyCapture();
+        captureRef.current = null;
       }
+
+      captureRef.current = cleanup;
+      setTimeout(cleanup, 8000);
+    } else {
+      // macOS / Linux: use DOM events (focus required, but CGEventTap / uiohook
+      // means Win key isn't an issue here).
+      window.wisper.pauseHotkey();
+      const held = new Set<string>();
+
+      function onDown(e: KeyboardEvent) {
+        e.preventDefault();
+        const k = resolveKey(e);
+        if (!k) return;
+        held.add(k);
+        setCaptureKeys([...held]);
+      }
+
+      function onUp(e: KeyboardEvent) {
+        e.preventDefault();
+        if (held.size > 0) {
+          const combo = [...held].join('+');
+          cleanup();
+          apply({ hotkey: combo });
+        }
+      }
+
+      function onBlur() { cleanup(); }
+
+      function cleanup() {
+        setCapturing(false);
+        setCaptureKeys([]);
+        window.removeEventListener('keydown', onDown, true);
+        window.removeEventListener('keyup', onUp, true);
+        window.removeEventListener('blur', onBlur);
+        window.wisper.resumeHotkey();
+        captureRef.current = null;
+      }
+
+      captureRef.current = cleanup;
+      window.addEventListener('keydown', onDown, true);
+      window.addEventListener('keyup', onUp, true);
+      window.addEventListener('blur', onBlur);
+      setTimeout(cleanup, 8000);
     }
-
-    function onBlur() { cleanup(); }
-
-    function cleanup() {
-      setCapturing(false);
-      setCaptureKeys([]);
-      window.removeEventListener('keydown', onDown, true);
-      window.removeEventListener('keyup', onUp, true);
-      window.removeEventListener('blur', onBlur);
-      window.wisper.resumeHotkey();
-      captureRef.current = null;
-    }
-
-    captureRef.current = cleanup;
-    window.addEventListener('keydown', onDown, true);
-    window.addEventListener('keyup', onUp, true);
-    window.addEventListener('blur', onBlur);
-    setTimeout(cleanup, 8000);
   }
 
   function cancelCapture() {

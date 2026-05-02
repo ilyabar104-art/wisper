@@ -1,10 +1,32 @@
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess, execFileSync } from 'child_process';
 import { existsSync } from 'fs';
 import { createServer } from 'net';
 import { cpus } from 'os';
 import { whisperServerBinPath } from './paths.js';
 import { modelPath, isModelInstalled } from './models.js';
 import { getSettings } from './settings.js';
+
+// On Windows, whisper-server uses ANSI fopen() and can't handle Unicode paths.
+// Convert to 8.3 short path via Scripting.FileSystemObject (no Add-Type compilation,
+// ~500ms vs 10-15s for PowerShell Add-Type).
+const _shortPathCache = new Map<string, string>();
+function winShortPath(p: string): string {
+  if (process.platform !== 'win32' || !/[^\x20-\x7E]/.test(p)) return p;
+  const hit = _shortPathCache.get(p);
+  if (hit) return hit;
+  try {
+    const escaped = p.replace(/'/g, "''");
+    const short = execFileSync('powershell', [
+      '-NoProfile', '-NonInteractive', '-Command',
+      `(New-Object -ComObject Scripting.FileSystemObject).GetFile('${escaped}').ShortPath`,
+    ], { timeout: 5000, encoding: 'utf8' }).trim();
+    const result = short || p;
+    _shortPathCache.set(p, result);
+    return result;
+  } catch {
+    return p;
+  }
+}
 
 export interface TranscribeResult {
   text: string;
@@ -48,7 +70,7 @@ async function startServer(modelId: string): Promise<ServerHandle> {
 
   const port = await freePort();
   const args = [
-    '-m', modelPath(modelId),
+    '-m', winShortPath(modelPath(modelId)),
     '--host', '127.0.0.1',
     '--port', String(port),
     '--inference-path', '/inference',
@@ -64,27 +86,30 @@ async function startServer(modelId: string): Promise<ServerHandle> {
 
   let gpuLogged = false;
   const onLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    console.log('[whisper-server]', trimmed);
     if (!gpuLogged) {
       // Metal (macOS)
-      if (line.includes('ggml_metal_init: found device')) {
-        const m = line.match(/ggml_metal_init: found device: (.+)/);
+      if (trimmed.includes('ggml_metal_init: found device')) {
+        const m = trimmed.match(/ggml_metal_init: found device: (.+)/);
         console.log('[whisper] Metal —', m ? m[1].trim() : 'GPU');
         gpuLogged = true;
       }
       // Vulkan
-      else if (line.includes('ggml_vulkan: Using')) {
-        const m = line.match(/ggml_vulkan: Using (.+)/);
+      else if (trimmed.includes('ggml_vulkan: Using')) {
+        const m = trimmed.match(/ggml_vulkan: Using (.+)/);
         console.log('[whisper] Vulkan —', m ? m[1].trim() : 'GPU');
         gpuLogged = true;
       }
       // CUDA
-      else if (line.includes('ggml_cuda_init: found') || line.includes('CUDA: Found')) {
-        const m = line.match(/found (\d+) CUDA/i);
+      else if (trimmed.includes('ggml_cuda_init: found') || trimmed.includes('CUDA: Found')) {
+        const m = trimmed.match(/found (\d+) CUDA/i);
         console.log('[whisper] CUDA —', m ? `${m[1]} device(s)` : 'GPU');
         gpuLogged = true;
       }
     }
-    if (line.includes('listening') || line.includes('Server is listening')) {
+    if (trimmed.includes('listening') || trimmed.includes('Server is listening')) {
       readyResolve?.();
     }
   };
@@ -109,7 +134,7 @@ async function startServer(modelId: string): Promise<ServerHandle> {
 
   // Fallback: poll the port — some builds don't print a "listening" line.
   const portPoll = (async () => {
-    const deadline = Date.now() + 30_000;
+    const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
       try {
         const r = await fetch(`http://127.0.0.1:${port}/`, { method: 'GET' });
@@ -155,13 +180,28 @@ export async function transcribeWav(wavBytes: Buffer): Promise<TranscribeResult>
     'audio.wav',
   );
   form.append('response_format', 'json');
-  form.append('language', settings.language || 'auto');
+  // whisper-server treats empty/omitted language as auto-detect;
+  // sending the literal string "auto" can crash some builds.
+  if (settings.language && settings.language !== 'auto') {
+    form.append('language', settings.language);
+  }
   form.append('temperature', '0');
 
-  const res = await fetch(`http://127.0.0.1:${handle.port}/inference`, {
-    method: 'POST',
-    body: form,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`http://127.0.0.1:${handle.port}/inference`, {
+      method: 'POST',
+      body: form,
+    });
+  } catch (err) {
+    // Server crashed mid-request — kill so next call gets a fresh start.
+    if (server?.port === handle.port) {
+      console.warn('[whisper] inference fetch failed, killing crashed server');
+      try { server.proc.kill(); } catch {}
+      server = null;
+    }
+    throw err;
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(`whisper-server ${res.status}: ${body.slice(0, 200)}`);

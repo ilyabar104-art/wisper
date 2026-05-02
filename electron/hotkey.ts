@@ -72,6 +72,10 @@ const WIN_VK_MAP: Record<string, number> = {
   F13: 0x7C, F14: 0x7D, F15: 0x7E, F16: 0x7F, F17: 0x80, F18: 0x81, F19: 0x82,
 };
 
+// Reverse map: Windows VK code → key name (for capture mode)
+const WIN_VK_REVERSE: Record<number, string> = {};
+for (const [name, vk] of Object.entries(WIN_VK_MAP)) WIN_VK_REVERSE[vk] = name;
+
 // uiohook keycodes (Linux fallback)
 const UIOHOOK_MAP: Record<string, number> = {
   RightAlt: UiohookKey.AltRight,
@@ -135,6 +139,10 @@ interface Backend {
   stop(): void;
   /** Send Cmd+V via the native helper. macOS only; throws on other platforms. */
   paste?(): void;
+  /** Enter global key-capture mode (Windows only). */
+  beginCapture?(cb: (keyName: string, isDown: boolean) => void): void;
+  /** Exit global key-capture mode. */
+  endCapture?(): void;
 }
 
 // ---- macOS: CGEventTap helper subprocess -------------------------------
@@ -187,7 +195,7 @@ class MacBackend implements Backend {
       }
     });
 
-    this._applyCombo(parseCombo(getSettings().hotkey));
+    this.setCombo(parseCombo(getSettings().hotkey));
   }
 
   private handleStdout(data: string): void {
@@ -274,6 +282,7 @@ class WinBackend implements Backend {
   private savedCombo: string[] = [];
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
+  private captureCallback: ((keyName: string, isDown: boolean) => void) | null = null;
 
   start(onDown: Listener, onUp: Listener, onError?: ErrorListener): void {
     this.onDown = onDown;
@@ -299,12 +308,11 @@ class WinBackend implements Backend {
     this.proc.on('exit', (code) => {
       this.proc = null;
       if (this.stopped) return;
-      if (code !== 0 && code !== null) {
-        console.error(`win-hotkey exited with code ${code}`);
-        this.retryTimer = setTimeout(() => { this.retryTimer = null; this._spawn(); }, 5000);
-      }
+      // Always retry — code 0 can happen when stdin pipe closes unexpectedly.
+      console.error(`win-hotkey exited with code ${code}, retrying in 2s`);
+      this.retryTimer = setTimeout(() => { this.retryTimer = null; this._spawn(); }, 2000);
     });
-    this._applyCombo(parseCombo(getSettings().hotkey));
+    this.setCombo(parseCombo(getSettings().hotkey));
   }
 
   private handleStdout(data: string): void {
@@ -315,12 +323,35 @@ class WinBackend implements Backend {
       this.buffered = this.buffered.slice(idx + 1);
       if (line === 'DOWN') { this.comboActive = true;  this.onDown?.(); }
       else if (line === 'UP') { this.comboActive = false; this.onUp?.(); }
-      else if (line === 'READY') { /* hook installed */ }
+      else if (line === 'READY') { console.log('[win-hotkey] hook installed, listening globally'); }
+      else if (line === 'CAPREADY') { /* capture mode confirmed active */ }
+      else if (line === 'CAPEND') { /* capture mode ended */ }
+      else if (line.startsWith('KEY ')) {
+        const parts = line.split(' ');
+        const vk = parseInt(parts[1], 10);
+        const isDown = parts[2] === 'D';
+        const name = WIN_VK_REVERSE[vk];
+        if (name && this.captureCallback) this.captureCallback(name, isDown);
+      }
       else if (line.startsWith('ERROR')) {
         console.error('[win-hotkey]', line);
         this.onError?.(line.replace(/^ERROR\s*/, ''));
       }
     }
+  }
+
+  beginCapture(cb: (keyName: string, isDown: boolean) => void): void {
+    this.captureCallback = cb;
+    this.proc?.stdin?.write('CAPBEGIN\n');
+  }
+
+  endCapture(): void {
+    this.captureCallback = null;
+    this.proc?.stdin?.write('CAPEND\n');
+  }
+
+  paste(): void {
+    this.proc?.stdin?.write('PASTE\n');
   }
 
   setCombo(keys: string[]): void {
@@ -456,10 +487,19 @@ export function stopHotkey(): void {
   backend = null;
 }
 
-/** macOS only: send Cmd+V via the native CGEventPost helper. Returns true if sent. */
+/** Send paste via native helper (macOS: CGEventPost, Windows: SendInput). Returns true if sent. */
 export function nativePaste(): boolean {
-  if (process.platform !== 'darwin') return false;
   if (!backend?.paste) return false;
   backend.paste();
   return true;
+}
+
+/** Windows only: enter global key-capture mode. */
+export function startHotkeyCapture(cb: (keyName: string, isDown: boolean) => void): void {
+  backend?.beginCapture?.(cb);
+}
+
+/** Windows only: exit global key-capture mode. */
+export function stopHotkeyCapture(): void {
+  backend?.endCapture?.();
 }

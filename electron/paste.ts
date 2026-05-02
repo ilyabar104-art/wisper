@@ -47,9 +47,11 @@ function sendPaste(): Promise<void> {
     return Promise.resolve();
   }
   if (process.platform === 'win32') {
-    // mshta starts ~3x faster than PowerShell — no JIT, no profile loading.
+    // Use win-hotkey.exe's SendInput — already running, doesn't steal focus.
+    if (nativePaste()) return Promise.resolve();
+    // Fallback if helper isn't running.
     return run('mshta.exe', [
-      'vbscript:CreateObject("WScript.Shell").SendKeys("^v")(window.close)',
+      'vbscript:Execute("CreateObject(""WScript.Shell"").SendKeys ""^v"":window.close()")',
     ]);
   }
   return run('xdotool', ['key', '--clearmodifiers', 'ctrl+v']);
