@@ -41,10 +41,13 @@ export class MicRecorder {
   private chunks: Float32Array[] = [];
 
   async start(onLevel?: (rms: number) => void): Promise<void> {
+    // No hardware sample-rate or channel constraints — let the driver open at
+    // its native format (e.g. 48 kHz for Intel SST array mics). The AudioContext
+    // at 16 kHz resamples the stream internally via Chromium's high-quality
+    // resampler, so Whisper always receives 16 kHz mono PCM regardless of the
+    // device's native capabilities.
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        channelCount: 1,
-        sampleRate: 16000,
         echoCancellation: false,
         noiseSuppression: false,
         autoGainControl: false,
