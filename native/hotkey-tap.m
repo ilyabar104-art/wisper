@@ -88,6 +88,13 @@ static BOOL updateState(int64_t keycode, BOOL isDown) {
 static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type,
                               CGEventRef event, void *refcon) {
     if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+        // Clear stale key state before re-enabling — keys held at disable time
+        // won't fire keyUp events, so gPressed would stay dirty forever.
+        [gPressed removeAllObjects];
+        if (gActive) {
+            gActive = NO;
+            emit("UP");
+        }
         if (gTap) CGEventTapEnable(gTap, true);
         return event;
     }
@@ -184,6 +191,21 @@ int main(int argc, const char **argv) {
         CGEventTapEnable(gTap, true);
         emit("READY");
 
+        // Watchdog: macOS can silently disable the tap (e.g. after synthetic
+        // key events from PASTE). Poll every 2 s and re-enable if needed.
+        CFRunLoopTimerRef watchdog = CFRunLoopTimerCreateWithHandler(
+            kCFAllocatorDefault,
+            CFAbsoluteTimeGetCurrent() + 2.0, 2.0, 0, 0,
+            ^(CFRunLoopTimerRef t) {
+                if (gTap && !CGEventTapIsEnabled(gTap)) {
+                    [gPressed removeAllObjects];
+                    if (gActive) { gActive = NO; emit("UP"); }
+                    CGEventTapEnable(gTap, true);
+                }
+            }
+        );
+        CFRunLoopAddTimer(CFRunLoopGetCurrent(), watchdog, kCFRunLoopCommonModes);
+
         // Read stdin on a background thread, dispatch commands to main loop.
         dispatch_queue_t q = dispatch_queue_create("hotkey.stdin", DISPATCH_QUEUE_SERIAL);
         dispatch_async(q, ^{
@@ -203,6 +225,7 @@ int main(int argc, const char **argv) {
         });
 
         CFRunLoopRun();
+        CFRelease(watchdog);
     }
     return 0;
 }

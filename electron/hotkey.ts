@@ -184,15 +184,15 @@ class MacBackend implements Backend {
     this.proc.on('exit', (code) => {
       this.proc = null;
       if (this.stopped) return;
-      if (code !== 0 && code !== null) {
-        console.error(`hotkey-tap exited with code ${code}`);
-        // Retry every 5 s — likely a missing Accessibility permission that the
-        // user will grant while the app is running.
-        this.retryTimer = setTimeout(() => {
-          this.retryTimer = null;
-          this._spawn();
-        }, 5000);
-      }
+      // Always retry — code 0 can happen when stdin pipe closes unexpectedly
+      // (same policy as WinBackend). On permission denied, keep retrying every
+      // 5 s so the app recovers once the user grants Accessibility access.
+      const delay = code !== 0 && code !== null ? 5000 : 2000;
+      console.error(`hotkey-tap exited with code ${code}, retrying in ${delay}ms`);
+      this.retryTimer = setTimeout(() => {
+        this.retryTimer = null;
+        this._spawn();
+      }, delay);
     });
 
     this.setCombo(parseCombo(getSettings().hotkey));
